@@ -1,0 +1,41 @@
+name: verify-14304
+on:
+  push:
+    branches: [verify/14304]
+permissions:
+  contents: read
+jobs:
+  check:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [fix, nofix]
+    env:
+      UV_FROZEN: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Revert only the Rust change
+        if: matrix.variant == 'nofix'
+        run: git checkout HEAD~2 -- pydantic-core/src && git status --short
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+      - name: Install (builds pydantic-core from source)
+        run: uv sync --all-packages --group testing-extra --all-extras
+      - name: Lint
+        if: matrix.variant == 'fix'
+        run: |
+          uv sync --all-packages --group linting --all-extras
+          make lint
+          uv run pyright pydantic
+      - name: New tests
+        run: uv run pytest -q tests/types/test_sequence.py -k "negative_indices"
+      - name: Whole suite
+        if: matrix.variant == 'fix'
+        run: uv run pytest -q -p no:cacheprovider
