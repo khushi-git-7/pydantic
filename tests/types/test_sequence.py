@@ -238,3 +238,31 @@ def test_sequence_named_tuple_nested_type() -> None:
     assert ta.dump_json(pair, exclude={'__all__': {'b'}}) == b'[{"a":1},{"a":3}]'
     assert ta.dump_python(pair, exclude={0}) == ({'a': 3, 'b': 4},)
     assert ta.dump_json(pair, exclude={0}) == b'[{"a":3,"b":4}]'
+
+
+@pytest.mark.parametrize('sequence_type', [list, tuple, deque])
+@pytest.mark.parametrize('mode', ['python', 'json'])
+def test_sequence_serialization_negative_indices(sequence_type: type, mode: str) -> None:
+    """https://github.com/pydantic/pydantic/issues/14304"""
+    ta = TypeAdapter(Sequence[int])
+    value = sequence_type([1, 2, 3])
+
+    assert list(ta.dump_python(value, mode=mode, exclude={-1})) == [1, 2]
+    assert list(ta.dump_python(value, mode=mode, include={0: ..., -1: ...})) == [1, 3]
+
+
+def test_sequence_field_negative_indices() -> None:
+    """https://github.com/pydantic/pydantic/issues/14304"""
+
+    class Item(BaseModel):
+        a: int
+        b: int = 0
+
+    class Model(BaseModel):
+        items: Sequence[Item]
+
+    m = Model(items=[Item(a=1), Item(a=2), Item(a=3)])
+
+    assert m.model_dump(exclude={'items': {-1}}) == {'items': [{'a': 1, 'b': 0}, {'a': 2, 'b': 0}]}
+    assert m.model_dump(include={'items': {-1: {'a'}}}) == {'items': [{'a': 3}]}
+    assert m.model_dump_json(exclude={'items': {-2: {'b'}}}) == '{"items":[{"a":1,"b":0},{"a":2},{"a":3,"b":0}]}'
