@@ -8,7 +8,7 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use pyo3::types::{PyInt, PyString};
+use pyo3::types::{PyByteArray, PyBytes, PyInt, PySequence, PyString};
 
 use crate::definitions::DefinitionsBuilder;
 use crate::py_gc::PyGcTraverse;
@@ -383,7 +383,7 @@ impl FunctionWrapSerializer {
     fn call<'py>(&self, value: &Bound<'py, PyAny>, state: &mut SerializationState<'py>) -> PyResult<(bool, Py<PyAny>)> {
         let py = value.py();
         if self.when_used.should_use(value, &state.extra) {
-            let serialize = SerializationCallable::new(&self.serializer, state);
+            let serialize = SerializationCallable::new(&self.serializer, state, sequence_len(value));
             let v = if self.is_field_serializer {
                 if let Some(model) = state.model.as_ref() {
                     if self.info_arg {
@@ -431,6 +431,9 @@ pub(crate) struct SerializationCallable {
     serializer: Arc<CombinedSerializer>,
     extra_owned: ExtraOwned,
     filter: AnyFilter,
+    /// Length of the value given to the wrap serializer when it is a sequence, so that
+    /// `handler(item, index)` can resolve negative indices in `include` and `exclude`.
+    sequence_len: Option<usize>,
 }
 
 // `serializer` is intentionally not traversed: it is an `Arc` clone of a subtree owned (and
@@ -439,13 +442,29 @@ pub(crate) struct SerializationCallable {
 impl_py_gc_traverse!(SerializationCallable { extra_owned });
 
 impl SerializationCallable {
-    pub fn new(serializer: &Arc<CombinedSerializer>, state: &SerializationState<'_>) -> Self {
+    pub fn new(
+        serializer: &Arc<CombinedSerializer>,
+        state: &SerializationState<'_>,
+        sequence_len: Option<usize>,
+    ) -> Self {
         Self {
             serializer: serializer.clone(),
             extra_owned: ExtraOwned::new(state),
             filter: AnyFilter::new(),
+            sequence_len,
         }
     }
+}
+
+/// The length of `value` if it is a sequence whose items a wrap serializer passes to its handler by index.
+fn sequence_len(value: &Bound<'_, PyAny>) -> Option<usize> {
+    if value.is_instance_of::<PyString>()
+        || value.is_instance_of::<PyBytes>()
+        || value.is_instance_of::<PyByteArray>()
+    {
+        return None;
+    }
+    value.cast::<PySequence>().ok()?.len().ok()
 }
 
 #[pymethods]
@@ -475,7 +494,7 @@ impl SerializationCallable {
 
         if let Some(index_key) = index_key {
             let filter = if let Ok(index) = index_key.extract::<usize>() {
-                self.filter.for_sequence(state, None).index_filter(index)?
+                self.filter.for_sequence(state, self.sequence_len).index_filter(index)?
             } else if index_key.is_instance_of::<PyString>() || index_key.is_instance_of::<PyInt>() {
                 self.filter.key_filter(index_key, state)?
             } else {
